@@ -17,9 +17,9 @@ import org.json.JSONObject
 
 object LambdaInvoker {
 
-    private const val IDENTITY_POOL_ID = "YOUR_IDENTITY_POOL_ID" // e.g., "eu-north-1:xxxx-xxxx-xxxx"
-    private const val REGION = "eu-north-1"
-    private const val FUNCTION_ARN = "arn:aws:lambda:eu-north-1:599289652541:function:beat-detection"
+    private val IDENTITY_POOL_ID = AwsConfig.IDENTITY_POOL_ID
+    private val REGION = AwsConfig.REGION
+    private val FUNCTION_ARN = AwsConfig.LAMBDA_ARN
 
     // Cache credentials to avoid repeated Cognito calls
     private var cachedCredentials: Credentials? = null

@@ -26,9 +26,9 @@ import kotlin.time.Duration.Companion.hours
 
 object S3Uploader {
 
-    private const val IDENTITY_POOL_ID = "eu-north-1:d6ca04bb-eef5-4264-9986-ceedb5bbfe96" // e.g., "eu-north-1:xxxx-xxxx-xxxx"
-    private const val BUCKET_NAME = "beat-detection-audio"
-    private const val REGION = "eu-north-1"
+    private val IDENTITY_POOL_ID = AwsConfig.IDENTITY_POOL_ID
+    private val BUCKET_NAME = AwsConfig.BUCKET_NAME
+    private val REGION = AwsConfig.REGION
 
     data class UploadResult(
         val bucket: String,
