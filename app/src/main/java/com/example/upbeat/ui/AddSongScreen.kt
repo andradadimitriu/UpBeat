@@ -77,6 +77,7 @@ fun AddSongScreen(
 
                 Log.d("AddSongScreen", "Uploaded to key=${uploadResult.key}, invoking Lambda")
                 val lambdaResponse = LambdaInvoker.invokeProcessSong(
+                    context = context,
                     s3Key = uploadResult.key,
                     bucket = uploadResult.bucket
                 )

@@ -5,6 +5,9 @@ import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.net.Uri
 import android.util.Log
+import aws.sdk.kotlin.services.cognitoidentity.CognitoIdentityClient
+import aws.sdk.kotlin.services.cognitoidentity.model.GetCredentialsForIdentityRequest
+import aws.sdk.kotlin.services.cognitoidentity.model.GetIdRequest
 import aws.sdk.kotlin.services.s3.S3Client
 import aws.sdk.kotlin.services.s3.model.GetObjectRequest
 import aws.sdk.kotlin.services.s3.model.HeadObjectRequest
@@ -15,7 +18,6 @@ import aws.smithy.kotlin.runtime.auth.awscredentials.Credentials
 import aws.smithy.kotlin.runtime.auth.awscredentials.CredentialsProvider
 import aws.smithy.kotlin.runtime.collections.Attributes
 import aws.smithy.kotlin.runtime.content.ByteStream
-import aws.smithy.kotlin.runtime.net.url.Url
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -23,8 +25,8 @@ import java.io.FileOutputStream
 import kotlin.time.Duration.Companion.hours
 
 object S3Uploader {
-    private const val ACCESS_KEY = ""
-    private const val SECRET_KEY = ""
+
+    private const val IDENTITY_POOL_ID = "eu-north-1:d6ca04bb-eef5-4264-9986-ceedb5bbfe96" // e.g., "eu-north-1:xxxx-xxxx-xxxx"
     private const val BUCKET_NAME = "beat-detection-audio"
     private const val REGION = "eu-north-1"
 
@@ -39,18 +41,68 @@ object S3Uploader {
         val s3Key: String        // e.g. "uuid/My Song.flac"
     )
 
-    private val credentials = Credentials(
-        accessKeyId = ACCESS_KEY,
-        secretAccessKey = SECRET_KEY
-    )
+    // Cache credentials to avoid repeated Cognito calls
+    private var cachedCredentials: Credentials? = null
+    private var credentialsExpiration: Long = 0
 
-    // Use path-style endpoint (s3.region.amazonaws.com/bucket/key) instead of virtual-hosted
-    // (bucket.s3.region.amazonaws.com) to avoid DNS resolution failures on some networks.
-    private fun buildS3Client() = S3Client {
+    private suspend fun getCognitoCredentials(context: Context): Credentials {
+        // Return cached credentials if still valid (with 5 min buffer)
+        val now = System.currentTimeMillis()
+        if (cachedCredentials != null && now < credentialsExpiration - 300_000) {
+            return cachedCredentials!!
+        }
+
+        return withContext(Dispatchers.IO) {
+            try {
+                val cognitoClient = CognitoIdentityClient {
+                    region = REGION
+                }
+
+                // Get Cognito Identity ID (reuse from UserIdentityManager if possible)
+                val userId = UserIdentityManager.getUserId(context)
+                val identityId = if (userId.startsWith("eu-north-1:")) {
+                    userId // Already a Cognito Identity ID
+                } else {
+                    // Get new identity from pool
+                    val idResponse = cognitoClient.getId(GetIdRequest {
+                        identityPoolId = IDENTITY_POOL_ID
+                    })
+                    idResponse.identityId ?: throw Exception("Failed to get Cognito Identity ID")
+                }
+
+                // Get temporary credentials
+                val credsResponse = cognitoClient.getCredentialsForIdentity(
+                    GetCredentialsForIdentityRequest {
+                        this.identityId = identityId
+                    }
+                )
+
+                val awsCreds = credsResponse.credentials
+                    ?: throw Exception("Failed to get credentials from Cognito")
+
+                cognitoClient.close()
+
+                // Cache credentials
+                cachedCredentials = Credentials(
+                    accessKeyId = awsCreds.accessKeyId ?: throw Exception("No access key"),
+                    secretAccessKey = awsCreds.secretKey ?: throw Exception("No secret key"),
+                    sessionToken = awsCreds.sessionToken,
+                    expiration = awsCreds.expiration
+                )
+                credentialsExpiration = awsCreds.expiration?.epochSeconds?.times(1000) ?: (now + 3600_000)
+
+                cachedCredentials!!
+            } catch (e: Exception) {
+                Log.e("S3Uploader", "Failed to get Cognito credentials", e)
+                throw e
+            }
+        }
+    }
+
+    private fun buildS3Client(context: Context) = S3Client {
         region = REGION
-        endpointUrl = Url.parse("https://s3.$REGION.amazonaws.com")
         credentialsProvider = object : CredentialsProvider {
-            override suspend fun resolve(attributes: Attributes) = credentials
+            override suspend fun resolve(attributes: Attributes) = getCognitoCredentials(context)
         }
     }
 
@@ -72,7 +124,7 @@ object S3Uploader {
 
         return withContext(Dispatchers.IO) {
             try {
-                val s3Client = buildS3Client()
+                val s3Client = buildS3Client(context)
 
                 s3Client.putObject(PutObjectRequest {
                     bucket = BUCKET_NAME
@@ -103,7 +155,7 @@ object S3Uploader {
         val userId = UserIdentityManager.getUserId(context)
         return withContext(Dispatchers.IO) {
             try {
-                val s3Client = buildS3Client()
+                val s3Client = buildS3Client(context)
                 val response = s3Client.listObjectsV2(ListObjectsV2Request {
                     bucket = BUCKET_NAME
                     prefix = "$userId/"
@@ -127,10 +179,10 @@ object S3Uploader {
         }
     }
 
-    suspend fun getPresignedUrl(key: String): String? {
+    suspend fun getPresignedUrl(context: Context, key: String): String? {
         return withContext(Dispatchers.IO) {
             try {
-                val s3Client = buildS3Client()
+                val s3Client = buildS3Client(context)
                 val presigned = s3Client.presignGetObject(
                     input = GetObjectRequest { bucket = BUCKET_NAME; this.key = key },
                     duration = 1.hours
@@ -146,10 +198,10 @@ object S3Uploader {
 
     data class ObjectMetadata(val contentType: String?, val contentLength: Long?)
 
-    suspend fun checkFileExists(key: String): Boolean {
+    suspend fun checkFileExists(context: Context, key: String): Boolean {
         return withContext(Dispatchers.IO) {
             try {
-                val s3Client = buildS3Client()
+                val s3Client = buildS3Client(context)
                 s3Client.headObject(HeadObjectRequest { bucket = BUCKET_NAME; this.key = key })
                 s3Client.close()
                 true
@@ -160,10 +212,10 @@ object S3Uploader {
         }
     }
 
-    suspend fun getObjectMetadata(key: String): ObjectMetadata? {
+    suspend fun getObjectMetadata(context: Context, key: String): ObjectMetadata? {
         return withContext(Dispatchers.IO) {
             try {
-                val s3Client = buildS3Client()
+                val s3Client = buildS3Client(context)
                 val response = s3Client.headObject(HeadObjectRequest { bucket = BUCKET_NAME; this.key = key })
                 s3Client.close()
                 ObjectMetadata(
