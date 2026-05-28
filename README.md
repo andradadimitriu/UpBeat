@@ -4,12 +4,9 @@ A mobile app for music playback with beat detection.
 
 ## Screenshots
 
-<!-- Add your screenshots here -->
-<!-- 
 ![Home Screen](images/SongsListScreen.png)
 ![Add Song Screen](images/AddSongScreen.png)
 ![Song Screen](images/SongScreen.png)
--->
 
 ## Features
 
