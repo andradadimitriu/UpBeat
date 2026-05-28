@@ -3,6 +3,7 @@ package com.example.upbeat.ui
 import android.net.Uri
 import android.util.Log
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -12,8 +13,11 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -23,6 +27,7 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -30,6 +35,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -44,9 +50,11 @@ import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.ProgressiveMediaSource
 import androidx.media3.extractor.DefaultExtractorsFactory
 import com.example.upbeat.util.S3Uploader
+import com.example.upbeat.util.SongDeleter
 import com.example.upbeat.util.SongDownloader
 import com.example.upbeat.viewmodel.SongsViewModel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import java.io.File
 
 private enum class BeatsStatus { CHECKING, NOT_READY, AVAILABLE }
@@ -60,16 +68,29 @@ private sealed class DownloadState {
 }
 
 @Composable
-fun SongScreen(songName: String?, songsViewModel: SongsViewModel) {
+fun SongScreen(songName: String?, songsViewModel: SongsViewModel, onNavigateBack: () -> Unit = {}) {
     val context = LocalContext.current
     val song = remember(songName) { songsViewModel.getSong(songName ?: "") }
+    val coroutineScope = rememberCoroutineScope()
 
     var originalState by remember { mutableStateOf<DownloadState>(DownloadState.Idle) }
     var beatsState    by remember { mutableStateOf<DownloadState>(DownloadState.Idle) }
     var beatsStatus   by remember { mutableStateOf(BeatsStatus.CHECKING) }
 
-    LaunchedEffect(song) {
+    // Track which player is active (null = none, "original" or "beats")
+    var activePlayer by remember { mutableStateOf<String?>(null) }
+
+    // Delete dialog state
+    var showDeleteDialog by remember { mutableStateOf(false) }
+    var isDeleting by remember { mutableStateOf(false) }
+
+    // Refresh state
+    var refreshTrigger by remember { mutableStateOf(0) }
+    var isRefreshing by remember { mutableStateOf(false) }
+
+    LaunchedEffect(song, refreshTrigger) {
         song ?: return@LaunchedEffect
+        isRefreshing = true
 
         // ── Original ──────────────────────────────────────────────────────────
         originalState = DownloadState.Progress(0f)
@@ -81,8 +102,10 @@ fun SongScreen(songName: String?, songsViewModel: SongsViewModel) {
 
         // ── With-beats ────────────────────────────────────────────────────────
         val beatsKey = buildBeatsKey(song.s3Key)
-        Log.d("SongScreen", "Checking for beats file: $beatsKey")
+        Log.d("SongScreen", "Original S3 key: ${song.s3Key}")
+        Log.d("SongScreen", "Generated beats key: $beatsKey")
         val exists = S3Uploader.checkFileExists(context, beatsKey)
+        Log.d("SongScreen", "Beats file exists: $exists")
         if (exists) {
             beatsStatus = BeatsStatus.AVAILABLE
             beatsState  = DownloadState.Progress(0f)
@@ -94,17 +117,66 @@ fun SongScreen(songName: String?, songsViewModel: SongsViewModel) {
         } else {
             beatsStatus = BeatsStatus.NOT_READY
         }
+
+        isRefreshing = false
     }
 
     Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
-        Text(songName ?: "Unknown Song", style = MaterialTheme.typography.headlineMedium)
+        // Title with refresh and delete buttons
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                songName ?: "Unknown Song",
+                style = MaterialTheme.typography.headlineMedium,
+                modifier = Modifier.weight(1f)
+            )
+            Row {
+                IconButton(
+                    onClick = { refreshTrigger++ },
+                    enabled = !isRefreshing && !isDeleting
+                ) {
+                    if (isRefreshing) {
+                        CircularProgressIndicator(modifier = Modifier.size(24.dp))
+                    } else {
+                        Icon(
+                            Icons.Default.Refresh,
+                            contentDescription = "Refresh",
+                            tint = MaterialTheme.colorScheme.primary
+                        )
+                    }
+                }
+                IconButton(
+                    onClick = { showDeleteDialog = true },
+                    enabled = !isDeleting && !isRefreshing
+                ) {
+                    if (isDeleting) {
+                        CircularProgressIndicator(modifier = Modifier.size(24.dp))
+                    } else {
+                        Icon(
+                            Icons.Default.Delete,
+                            contentDescription = "Delete song",
+                            tint = MaterialTheme.colorScheme.error
+                        )
+                    }
+                }
+            }
+        }
         Spacer(modifier = Modifier.height(24.dp))
 
         Spacer(modifier = Modifier.height(8.dp))
         when (val s = originalState) {
             is DownloadState.Idle     -> LoadingCard("Preparing…")
             is DownloadState.Progress -> DownloadingCard("Downloading original…", s.fraction)
-            is DownloadState.Ready    -> AudioPlayerCard("Original", Uri.fromFile(s.file))
+            is DownloadState.Ready    -> AudioPlayerCard(
+                title = "Original",
+                uri = Uri.fromFile(s.file),
+                playerId = "original",
+                isActive = activePlayer == "original",
+                onBecameActive = { activePlayer = "original" }
+            )
             is DownloadState.Error    -> ErrorCard("Failed to load original.")
         }
 
@@ -115,10 +187,56 @@ fun SongScreen(songName: String?, songsViewModel: SongsViewModel) {
             BeatsStatus.AVAILABLE -> when (val s = beatsState) {
                 is DownloadState.Idle        -> LoadingCard("Preparing beats…")
                 is DownloadState.Progress    -> DownloadingCard("Downloading beats…", s.fraction)
-                is DownloadState.Ready       -> AudioPlayerCard("With Beats", Uri.fromFile(s.file))
+                is DownloadState.Ready       -> AudioPlayerCard(
+                    title = "With Beats",
+                    uri = Uri.fromFile(s.file),
+                    playerId = "beats",
+                    isActive = activePlayer == "beats",
+                    onBecameActive = { activePlayer = "beats" }
+                )
                 is DownloadState.Error       -> ErrorCard("Failed to load beats.")
             }
         }
+    }
+
+    // Delete confirmation dialog
+    if (showDeleteDialog) {
+        AlertDialog(
+            onDismissRequest = { showDeleteDialog = false },
+            title = { Text("Delete Song?") },
+            text = {
+                Text("Are you sure you want to delete \"${songName}\"? This will delete both the original and beats version if it exists. This action cannot be undone.")
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        song?.let {
+                            isDeleting = true
+                            coroutineScope.launch {
+                                val success = SongDeleter.deleteSong(context, it.s3Key)
+                                isDeleting = false
+                                showDeleteDialog = false
+                                if (success) {
+                                    songsViewModel.removeSong(it.name)
+                                    onNavigateBack()
+                                }
+                            }
+                        }
+                    },
+                    enabled = !isDeleting
+                ) {
+                    Text("Delete", color = MaterialTheme.colorScheme.error)
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = { showDeleteDialog = false },
+                    enabled = !isDeleting
+                ) {
+                    Text("Cancel")
+                }
+            }
+        )
     }
 }
 
@@ -127,20 +245,32 @@ private fun buildBeatsKey(s3Key: String): String {
     val filename = s3Key.substringAfterLast("/")
     val name     = filename.substringBeforeLast(".", filename)
     val ext      = filename.substringAfterLast(".", "")
-    return if (ext.isEmpty()) "$folder/${name}_with_beats" else "$folder/${name}_with_beats.$ext"
+    return if (ext.isEmpty()) "$folder/${name}_with_beats" else "$folder/${name}_with_beats.wav"
 }
 
 /** Routes to ExoPlayer using a local file URI. */
 @Composable
-private fun AudioPlayerCard(title: String, uri: Uri) {
-    ExoPlayerCard(title, uri)
+private fun AudioPlayerCard(
+    title: String,
+    uri: Uri,
+    playerId: String,
+    isActive: Boolean,
+    onBecameActive: () -> Unit
+) {
+    ExoPlayerCard(title, uri, playerId, isActive, onBecameActive)
 }
 
 // ── ExoPlayer card (plays from local file URI) ────────────────────────────────
 
 @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
 @Composable
-private fun ExoPlayerCard(title: String, uri: Uri) {
+private fun ExoPlayerCard(
+    title: String,
+    uri: Uri,
+    playerId: String,
+    isActive: Boolean,
+    onBecameActive: () -> Unit
+) {
     val context   = LocalContext.current
     var isPlaying by remember { mutableStateOf(false) }
     var isReady   by remember(uri) { mutableStateOf(false) }
@@ -161,7 +291,12 @@ private fun ExoPlayerCard(title: String, uri: Uri) {
             .build().apply {
                 setMediaItem(MediaItem.fromUri(uri))
                 addListener(object : Player.Listener {
-                    override fun onIsPlayingChanged(playing: Boolean) { isPlaying = playing }
+                    override fun onIsPlayingChanged(playing: Boolean) {
+                        isPlaying = playing
+                        if (playing) {
+                            onBecameActive() // Notify parent that this player started
+                        }
+                    }
                     override fun onPlaybackStateChanged(state: Int) {
                         if (state == Player.STATE_READY) {
                             isReady = true
@@ -178,6 +313,13 @@ private fun ExoPlayerCard(title: String, uri: Uri) {
                 })
                 prepare()
             }
+    }
+
+    // Pause this player when another becomes active
+    LaunchedEffect(isActive) {
+        if (!isActive && exoPlayer.isPlaying) {
+            exoPlayer.pause()
+        }
     }
 
     LaunchedEffect(exoPlayer) {

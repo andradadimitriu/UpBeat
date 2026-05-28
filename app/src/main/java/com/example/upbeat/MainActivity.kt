@@ -7,10 +7,7 @@ import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.List
-import androidx.compose.material.icons.filled.AccountBox
 import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material3.Icon
@@ -26,16 +23,13 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavDestination.Companion.hierarchy
-import androidx.navigation.NavGraph.Companion.findStartDestination
 import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
-import androidx.navigation.compose.navigation
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import com.example.upbeat.ui.AddSongScreen
-import com.example.upbeat.ui.SampleScreen
 import com.example.upbeat.ui.SongListScreen
 import com.example.upbeat.ui.SongScreen
 import com.example.upbeat.ui.theme.UpBeatTheme
@@ -109,9 +103,16 @@ fun UpBeatApp(songsViewModel: SongsViewModel = viewModel()) {
                     AddSongScreen(
                         onSongAdded = { songName, s3Key ->
                             songsViewModel.addSong(songName, s3Key)
-                            navController.popBackStack()
+                            // Navigate to the newly created song's detail screen
+                            navController.navigate(
+                                AppDestinations.SONG_DETAIL.route.replace("{songName}", songName)
+                            ) {
+                                // Remove AddSongScreen from back stack
+                                popUpTo(AppDestinations.ADD_SONG.route) { inclusive = true }
+                            }
                         },
-                        onSongExists = { songName -> songsViewModel.songExists(songName) }
+                        onSongExists = { songName -> songsViewModel.songExists(songName) },
+                        onNavigateBack = { navController.popBackStack() }
                     )
                 }
                 composable(
@@ -119,13 +120,11 @@ fun UpBeatApp(songsViewModel: SongsViewModel = viewModel()) {
                     arguments = listOf(navArgument("songName") { type = NavType.StringType })
                 ) { backStackEntry ->
                     val songName = backStackEntry.arguments?.getString("songName")
-                    SongScreen(songName = songName, songsViewModel = songsViewModel)
-                }
-                composable(AppDestinations.FAVORITES.route) {
-                    SampleScreen(title = "Favorites Screen")
-                }
-                composable(AppDestinations.PROFILE.route) {
-                    SampleScreen(title = "Profile Screen")
+                    SongScreen(
+                        songName = songName,
+                        songsViewModel = songsViewModel,
+                        onNavigateBack = { navController.popBackStack() }
+                    )
                 }
             }
         }
@@ -140,8 +139,6 @@ enum class AppDestinations(
     HOME("Songs", Icons.Default.Home, "songs_list"),
     ADD_SONG("Add Song", Icons.Default.Add, "add_song"),
     SONG_DETAIL("Song Detail", Icons.Default.Info, "song_detail/{songName}"),
-    FAVORITES("Favorites", Icons.Default.Favorite, "favorites"),
-    PROFILE("Profile", Icons.Default.AccountBox, "profile"),
 }
 
 @Preview(showBackground = true)

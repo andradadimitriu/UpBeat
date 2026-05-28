@@ -48,6 +48,10 @@ class SongsViewModel : ViewModel() {
         }
     }
 
+    fun removeSong(name: String) {
+        _songs.removeAll { it.name.equals(name, ignoreCase = true) }
+    }
+
     fun songExists(name: String): Boolean {
         val candidate = name.trim()
         if (candidate.isEmpty()) return false
