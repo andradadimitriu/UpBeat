@@ -58,12 +58,14 @@ dependencies {
     // Media3 ExoPlayer
     implementation(libs.androidx.media3.exoplayer)
     implementation("androidx.media3:media3-datasource:${libs.versions.media3.get()}")
+    implementation(libs.androidx.navigation.testing)
 
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)
     androidTestImplementation(platform(libs.androidx.compose.bom))
     androidTestImplementation(libs.androidx.compose.ui.test.junit4)
+    androidTestImplementation(libs.androidx.navigation.testing)
     debugImplementation(libs.androidx.compose.ui.tooling)
     debugImplementation(libs.androidx.compose.ui.test.manifest)
 }
